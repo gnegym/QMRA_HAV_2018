@@ -1,0 +1,188 @@
+clc, clear, close all
+
+%% Test 7.23.2018_11.43
+
+%% Input parameters
+
+nsim = 10000;               % Number of simulations
+pop = 9160;                 % Total homeless population in San Diego
+opt = 2;                    % Escenario: 1 - No intervention, 2 - Intervention
+opt_w = 1;                  % Write output file 0 - No, 1- Yes
+seed = 12345;
+
+% Transfer rates
+
+TEf_param = [0.092,0.009];  % Mean and sd for hand to food (lettuce) transfer efficiency (%)
+TEh_param = [0.23,0.23];    % Range for hand to hand transfer efficiency (%)
+TEfo_param = [0.25,0.35];   % Range for hand to fomite transfer efficiency (%)
+TEm_param = [0.41,0.25];    % Mean and sd for hand to mouth transfer efficiency (%)
+
+% Surface area percentages
+
+SAf_param = [0.06,0.33];    % Range of surface area of hand in contact with food (%)
+SAfo_param = [0.06,0.33];   % Range of surface area of hand in contact with fomite (%)
+SAm_param = [0.06,0.33];    % Range of surface area of hand in contact with mouth (%)
+
+% Other distributions
+
+Food_param = [0 500]; % Range of ingested food per day (g/day)
+nFo_param = [10 20]; % Range of number of contacts with fomites per day (#/day)
+nHands_param = [0 20]; % Range of number of contacts with other hands per day (#/day)
+
+C_param = [0.08,0.01];      % Mean and sd for concentration of feces per hand (g) (!!!!)
+n_param = [11.45, 0.94];    % Scale and shape parameters for number of contacts/hr
+HR_param = [13.31,16.85];   % Range of awake hours per day [hr]
+R_param = [0.40,0.70];      % Virus recovery efficiency (%)
+I_param = [1/60,1/60];      % Infectivity
+
+switch opt
+    case 1
+        DR_param = [0,0];         % Log reduction for hand-washing
+        xsup1 = 3000;              % Upper bound for plotting (population)
+        xsup2 = 0.5;             % Upper bound for plotting (dose)
+        xsup3 = 3e10;
+    case 2
+        DR_param = [1.35,2.56];   % Log reduction for hand-washing
+        xsup1 = 60;       % Upper bound for plotting (population)
+        xsup2 = 12e-3;    % Upper bound for plotting (dose)
+        xsup3 = 5e8;
+end
+
+VP_param = [10^5,10^11];    % Viral particle counts (#/g feces)
+r_param = [0.549*0.75,0.549*1.25];  % Exponential parameter (Feces)
+
+%% Input distributions
+rng(seed);
+
+nm_TEf = makedist('normal',TEf_param(1),TEf_param(2));
+nm_TEm = makedist('normal',TEm_param(1),TEm_param(2));
+wb     = makedist('weibull',n_param(1),n_param(2));
+nm_C   = makedist('normal',C_param(1),C_param(2));
+
+TEf  = random(nm_TEf,nsim,1);
+C    = random(nm_C,nsim,1);
+n    = random(wb,nsim,1);                            % Number of contact events per hour
+HR   = HR_param(1)+rand(nsim,1)*diff(HR_param);      % Number of active hours per day
+TEh  = TEh_param(1) + rand(nsim,1)*diff(TEh_param);
+TEfo = TEfo_param(1) + rand(nsim,1)*diff(TEfo_param);
+SAf  = SAf_param(1) + rand(nsim,1)*diff(SAf_param);
+SAfo = SAfo_param(1) + rand(nsim,1)*diff(SAfo_param);
+
+Food = Food_param(1) + rand(nsim,1)*diff(Food_param);
+nFo = nFo_param(1) + rand(nsim,1)*diff(nFo_param);
+nHands = nHands_param(1) + rand(nsim,1)*diff(nHands_param);
+
+R    = R_param(1) + rand(nsim,1)*diff(R_param);
+I    = I_param(1) + rand(nsim,1)*diff(I_param);
+DR   = DR_param(1) + rand(nsim,1)*diff(DR_param);
+VP   = VP_param(1) + rand(nsim,1)*diff(VP_param);
+
+r    = r_param(1) + rand(nsim,1)*diff(r_param);
+
+%% Exposure assessment
+
+Dose = zeros(nsim,1);
+Dose2 = zeros(nsim,1);
+Df = zeros(nsim,1);
+Dh = zeros(nsim,1);
+aux2 = zeros(nsim,2);
+h = waitbar(0,'Please wait, running Monte Carlo simulation...');
+for i=1:nsim
+    Df(i) = C(i)*TEf(i)*SAf(i)*Food(i);
+    Dh(i) = C(i)*(TEfo(i)*SAfo(i)*nFo(i)+TEh(i)*nHands(i));
+    HRi  = ceil(HR(i));
+    ni   = ceil(n(i));
+    sum1 = 0;
+    aux1 = [];
+    for k=1:HRi
+        sum2 = 0;
+        for j=1:ni
+            TEm = random(nm_TEm,1,1);
+            SAm = SAm_param(1) + rand(1,1)*diff(SAm_param);
+            E = SAm*TEm*Dh(i);
+            sum2 = sum2 + E;
+            aux1 = [aux1;[TEm,SAm]];
+        end
+        sum1 = sum1 + sum2;
+    end
+    aux2(i,:) = mean(aux1);
+    Ci = sum1+Df(i);
+    Dose(i) = Ci*I(i)*1/R(i)*10^(-DR(i));
+    Dose2(i) = Dose(i)*VP(i);
+    waitbar(i/nsim)
+end
+close(h)
+
+%% Dose-response model
+P = zeros(nsim,1);
+for i=1:nsim
+    P(i) = 1-exp(-r(i)*Dose(i));
+end
+P = P*pop;
+
+%% Sensitivity analysis
+TEm = aux2(:,1); SAm = aux2(:,2);
+outputTable = array2table([Dose Dose2 P TEf TEh TEfo TEm SAf...
+    SAfo SAm Food nFo nHands C n HR R I DR r VP]);
+head = {'Dose' 'HAV_P' 'P' 'TEf' 'TEh' 'TEfo' 'TEm'...
+    'SAf' 'SAfo' 'SAm' 'Food' 'nFo' 'nHands' 'C' 'n' 'HR' 'R' 'I' 'DR' 'r' 'VP'};
+outputTable.Properties.VariableNames = head;
+if opt_w ==1
+    filename = sprintf('Results_Esc%s.csv',num2str(opt));
+    writetable(outputTable,filename);
+end
+%% Plots
+xlab = 'Dose of feces per day (g/day)';
+xlab2 = 'Number of HAV particles per day (#HAV/day)';
+
+figure()
+subplot(3,1,3)
+h = histogram(P);
+x = h.BinEdges;
+bins = x(1:end-1)+diff(h.BinEdges(1:2))/2;
+freq = h.Values/nsim;
+cum = cumsum(freq);
+bar(bins,freq,'b')
+hold on
+plot(x,[0,cum],'r-o','LineWidth',1)
+boxplot(P,'orientation','horizontal','symbol','')
+ylim([0,1.1])
+xlim([0,xsup1])
+yticks((0:0.2:1))
+yticklabels(string((0:0.2:1)))
+ylabel('Probability')
+xlabel('Infected population per day (hab/day)')
+
+subplot(3,1,2)
+h = histogram(Dose);
+x = h.BinEdges;
+bins = x(1:end-1)+diff(h.BinEdges(1:2))/2;
+freq = h.Values/nsim;
+cum = cumsum(freq);
+bar(bins,freq,'r')
+hold on
+plot(x,[0,cum],'r-o','LineWidth',1)
+boxplot(Dose,'orientation','horizontal','symbol','')
+ylim([0,1.1])
+xlim([0,xsup2])
+yticks((0:0.2:1))
+yticklabels(string((0:0.2:1)))
+ylabel('Probability')
+xlabel(xlab)
+
+subplot(3,1,1)
+h = histogram(Dose2);
+x = h.BinEdges;
+bins = x(1:end-1)+diff(h.BinEdges(1:2))/2;
+freq = h.Values/nsim;
+cum = cumsum(freq);
+bar(bins,freq)
+hold on
+plot(x,[0,cum],'r-o','LineWidth',1)
+boxplot(Dose2,'orientation','horizontal','symbol','')
+ylim([0,1.1])
+xlim([0 xsup3])
+yticks((0:0.2:1))
+yticklabels(string((0:0.2:1)))
+ylabel('Probability')
+xlabel(xlab2)
